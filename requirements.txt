@@ -1,0 +1,9 @@
+flask
+flask-cors
+pinecone==7.3.0
+openai==1.93.0
+python-dotenv
+tiktoken
+gunicorn
+tqdm
+beautifulsoup4
