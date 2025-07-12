@@ -21,6 +21,9 @@ build/
 .config_v
 config.ini
 *.config
+# Existing content...
+config_v.py
+config_.py  # Add this line
 
 # Logs
 *.log
