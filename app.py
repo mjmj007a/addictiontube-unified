@@ -34,7 +34,7 @@ limiter = Limiter(
 
 # Initialize clients
 try:
-    import config_v  # Replace with config_ if the file is config_.py
+    import config_v
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", config_v.OPENAI_API_KEY)
     PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", config_v.PINECONE_API_KEY)
     PINECONE_ENV = os.getenv("PINECONE_ENV", config_v.PINECONE_ENV)
@@ -42,6 +42,10 @@ except ImportError:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
     PINECONE_ENV = os.getenv("PINECONE_ENV")
+
+if not OPENAI_API_KEY or not PINECONE_API_KEY or not PINECONE_ENV:
+    logger.error("Missing required environment variables: OPENAI_API_KEY, PINECONE_API_KEY, or PINECONE_ENV")
+    raise EnvironmentError("Missing required environment variables")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 pc = Pinecone(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
