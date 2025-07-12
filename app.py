@@ -43,9 +43,18 @@ except ImportError:
     PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
     PINECONE_ENV = os.getenv("PINECONE_ENV")
 
-if not OPENAI_API_KEY or not PINECONE_API_KEY or not PINECONE_ENV:
-    logger.error("Missing required environment variables: OPENAI_API_KEY, PINECONE_API_KEY, or PINECONE_ENV")
-    raise EnvironmentError("Missing required environment variables")
+# Detailed validation for environment variables
+missing_vars = []
+if not OPENAI_API_KEY:
+    missing_vars.append("OPENAI_API_KEY")
+if not PINECONE_API_KEY:
+    missing_vars.append("PINECONE_API_KEY")
+if not PINECONE_ENV:
+    missing_vars.append("PINECONE_ENV")
+if missing_vars:
+    error_msg = f"Missing required environment variables: {', '.join(missing_vars)}"
+    logger.error(error_msg)
+    raise EnvironmentError(error_msg)
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 pc = Pinecone(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
@@ -61,6 +70,11 @@ with open('stories.json', 'r', encoding='utf-8') as f:
 
 def strip_html(text):
     return re.sub(r'<[^>]+>', '', text or '') if text else ''
+
+@app.route('/', methods=['GET', 'HEAD'])
+def health_check():
+    logger.info("Health check endpoint accessed")
+    return jsonify({"status": "ok", "message": "AddictionTube Unified API is running"}), 200
 
 @app.errorhandler(429)
 def ratelimit_handler(e):
