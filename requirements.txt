@@ -1,6 +1,6 @@
 Flask==3.0.3
 Flask-Cors==5.0.0
-pinecone-client==7.3.0
+pinecone-client==5.0.1
 openai==1.93.0
 python-dotenv==1.0.1
 tiktoken==0.8.0
