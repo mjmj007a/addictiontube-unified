@@ -33,8 +33,18 @@ limiter = Limiter(
 )
 
 # Initialize clients
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+try:
+    import config_v  # Replace with config_ if the file is config_.py
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", config_v.OPENAI_API_KEY)
+    PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", config_v.PINECONE_API_KEY)
+    PINECONE_ENV = os.getenv("PINECONE_ENV", config_v.PINECONE_ENV)
+except ImportError:
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+    PINECONE_ENV = os.getenv("PINECONE_ENV")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
+pc = Pinecone(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
 index = pc.Index("addictiontube-unified")
 
 # Load metadata for RAG context
@@ -85,4 +95,142 @@ def search_content():
         )
         query_embedding = embedding_response.data[0].embedding
     except APIError as e:
-        logger.error(f"OpenAI embedding failed: {
+        logger.error(f"OpenAI embedding failed: {str(e)}")
+        return jsonify({"error": "Embedding service unavailable", "details": str(e)}), 500
+
+    try:
+        filter_dict = {"category": {"$eq": category}} if category != 'all' else {}
+        total_results = index.query(
+            vector=query_embedding,
+            top_k=1000,
+            include_values=False,
+            include_metadata=False,
+            namespace=content_type,
+            filter=filter_dict
+        )
+        total = len(total_results.matches)
+
+        top_k = min(200, size * page)
+        results = index.query(
+            vector=query_embedding,
+            top_k=top_k,
+            include_metadata=True,
+            namespace=content_type,
+            filter=filter_dict
+        )
+        start = (page - 1) * size
+        end = min(start + size, len(results.matches))
+        paginated = results.matches[start:end] if start < len(results.matches) else []
+
+        items = []
+        for m in paginated:
+            item = {
+                "id": m.id,
+                "score": m.score,
+                "title": strip_html(m.metadata.get("title", "N/A")),
+                "description": strip_html(m.metadata.get("description", ""))
+            }
+            if content_type == 'stories':
+                item['image'] = m.metadata.get("image", "")
+            items.append(item)
+
+        logger.info(f"Search completed: query='{query}', content_type='{content_type}', category='{category}', page={page}, total={total}")
+        return jsonify({"results": items, "total": total})
+    except Exception as e:
+        logger.error(f"Pinecone query failed for {content_type}: {str(e)}")
+        return jsonify({"error": "Search service unavailable", "details": str(e)}), 500
+
+@app.route('/rag_answer_content', methods=['GET'])
+@limiter.limit("30 per hour")  # 30 requests per hour per IP
+def rag_answer_content():
+    query = re.sub(r'[^\w\s.,!?]', '', request.args.get('q', '')).strip()
+    content_type = request.args.get('content_type', '').strip()
+    category = request.args.get('category', 'all').strip()
+    reroll = request.args.get('reroll', '').lower().startswith('yes')
+
+    if not query or not content_type or content_type not in ['songs', 'poems', 'stories']:
+        logger.error(f"Invalid RAG request: query='{query}', content_type='{content_type}'")
+        return jsonify({"error": "Invalid or missing query or content type"}), 400
+
+    valid_categories = {
+        'songs': ['1074'],
+        'poems': ['1082'],
+        'stories': ['1028', '1042']
+    }
+    if category != 'all' and category not in valid_categories[content_type]:
+        logger.error(f"Invalid category: '{category}' for content_type='{content_type}'")
+        return jsonify({"error": "Invalid category for selected content type"}), 400
+
+    try:
+        embedding_response = client.embeddings.create(
+            input=query,
+            model="text-embedding-ada-002"
+        )
+        query_embedding = embedding_response.data[0].embedding
+    except APIError as e:
+        logger.error(f"OpenAI embedding failed: {str(e)}")
+        return jsonify({"error": "Embedding service unavailable", "details": str(e)}), 500
+
+    try:
+        filter_dict = {"category": {"$eq": category}} if category != 'all' else {}
+        results = index.query(
+            vector=query_embedding,
+            top_k=5,
+            include_metadata=True,
+            namespace=content_type,
+            filter=filter_dict
+        )
+
+        matches = results.matches
+        if reroll:
+            random.shuffle(matches)
+
+        if not matches:
+            logger.warning(f"No matches found for query='{query}', content_type='{content_type}'")
+            return jsonify({"error": "No relevant context found"}), 404
+
+        encoding = tiktoken.get_encoding("cl100k_base")
+        max_tokens = 16384 - 1000
+        context_docs = []
+        total_tokens = 0
+        content_dict = {'songs': song_dict, 'poems': poem_dict, 'stories': story_dict}
+
+        for match in matches:
+            text = content_dict[content_type].get(match.id, match.metadata.get("description", ""))
+            if not text:
+                logger.warning(f"Match {match.id} has no text metadata in {content_type}")
+                continue
+            doc = strip_html(text)[:3000]
+            doc_tokens = len(encoding.encode(doc))
+            if total_tokens + doc_tokens <= max_tokens:
+                context_docs.append(doc)
+                total_tokens += doc_tokens
+            else:
+                break
+
+        if not context_docs:
+            logger.warning(f"No usable context data for query='{query}', content_type='{content_type}'")
+            return jsonify({"error": "No usable context data found"}), 404
+
+        context_text = "\n\n---\n\n".join(context_docs)
+        system_prompt = f"You are an expert assistant for addiction recovery {content_type}."
+        user_prompt = f"""Use the following {content_type} to answer the question.\n\n{context_text}\n\nQuestion: {query}\nAnswer:"""
+
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=1000
+        )
+        answer = response.choices[0].message.content
+        logger.info(f"RAG answer generated for query='{query}', content_type='{content_type}'")
+        return jsonify({"answer": answer})
+    except Exception as e:
+        logger.error(f"RAG processing failed for {content_type}: {str(e)}")
+        return jsonify({"error": "RAG processing failed", "details": str(e)}), 500
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
