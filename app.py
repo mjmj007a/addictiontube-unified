@@ -117,7 +117,12 @@ def search_content():
         return jsonify({"error": "Embedding service unavailable", "details": str(e)}), 500
 
     try:
-        filter_dict = {"category": {"$eq": category}} if category != 'all' else {}
+        filter_dict = {}
+        if category != 'all':
+            if content_type in ['songs', 'poems']:  # Use category_id for songs and poems
+                filter_dict = {"category_id": {"$eq": category}}
+            elif content_type == 'stories':  # Use category for stories
+                filter_dict = {"category": {"$eq": category}}
         total_results = index.query(
             vector=query_embedding,
             top_k=1000,
@@ -190,7 +195,12 @@ def rag_answer_content():
         return jsonify({"error": "Embedding service unavailable", "details": str(e)}), 500
 
     try:
-        filter_dict = {"category": {"$eq": category}} if category != 'all' else {}
+        filter_dict = {}
+        if category != 'all':
+            if content_type in ['songs', 'poems']:  # Use category_id for songs and poems
+                filter_dict = {"category_id": {"$eq": category}}
+            elif content_type == 'stories':  # Use category for stories
+                filter_dict = {"category": {"$eq": category}}
         results = index.query(
             vector=query_embedding,
             top_k=5,
